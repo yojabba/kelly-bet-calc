@@ -10,6 +10,12 @@ def american_to_decimal(odds):
     else:
         return round((100 / abs(odds)) + 1, 4)
 
+def decimal_to_american(odds):
+    if odds >= 2.0:
+        return f"+{int((odds - 1) * 100)}"
+    else:
+        return f"-{int(100 / (odds - 1))}"
+
 def implied_prob(decimal_odds):
     return 1 / decimal_odds
 
@@ -37,12 +43,22 @@ def kelly_stake(bankroll, odds, win_prob, fraction):
         return 0.0
     return round(bankroll * kelly_fraction * fraction, 2)
 
+def classify_message(prob, edge):
+    if edge >= 5 and prob >= 60:
+        return "💣 Nuke"
+    elif edge >= 2 and prob >= 50:
+        return "✨ Sprinkle"
+    elif edge <= 0:
+        return "🗑️ Trash"
+    else:
+        return "🔍 Worth a Look"
+
 # ---------- Streamlit UI ----------
-st.title("📊 True Odds + Value Calculator (EM & LOG)")
+st.title("📊 True Odds + Value Calculator (EM, LOG & Avg)")
 
 st.write("""
 Input odds for both sides of the sharp market, plus your odds. We'll calculate the true probability,
-fair odds, edge %, and suggested Kelly stake using Equal Margin and LOG methods.
+fair odds, edge %, and suggested Kelly stake using Equal Margin, LOG, and an average of both.
 """)
 
 # Input Section
@@ -71,67 +87,50 @@ if calculate:
         "LOG Method": remove_margin_log
     }
 
+    method_probs = []
     for method_name, method_func in methods.items():
         prob_a, prob_b = method_func(sharp_a, sharp_b)
         true_prob = prob_a if side_choice == "Side A" else prob_b
+        method_probs.append(true_prob)
         fair = fair_odds(true_prob)
         edge = calc_edge(true_prob, your_prob)
         kelly = kelly_stake(bankroll, your_odds, true_prob, kelly_fraction)
+        msg = classify_message(true_prob * 100, edge)
 
-        color = "green" if edge > 0 else "red"
-        edge_display = f"<span style='color:{color}'>{edge}%</span>"
+        color_edge = "green" if edge >= 0 else "red"
+        color_prob = "green" if true_prob * 100 >= 60 else "black"
 
         results.append({
             "Method": method_name,
-            "True Prob": round(true_prob * 100, 2),
-            "Fair Odds": fair,
-            "Edge %": edge_display,
-            "Kelly Stake": f"${kelly}"
+            "True Prob": f"<span style='color:{color_prob}'>{round(true_prob * 100, 2)}%</span>",
+            "Fair Odds": decimal_to_american(fair),
+            "Edge %": f"<span style='color:{color_edge}'>{edge}%</span>",
+            "Kelly Stake": f"${kelly}",
+            "Message": msg
         })
+
+    # Average Method
+    avg_prob = sum(method_probs) / len(method_probs)
+    fair = fair_odds(avg_prob)
+    edge = calc_edge(avg_prob, your_prob)
+    kelly = kelly_stake(bankroll, your_odds, avg_prob, kelly_fraction)
+    msg = classify_message(avg_prob * 100, edge)
+    color_edge = "green" if edge >= 0 else "red"
+    color_prob = "green" if avg_prob * 100 >= 60 else "black"
+
+    results.append({
+        "Method": "Average (EM + LOG)",
+        "True Prob": f"<span style='color:{color_prob}'>{round(avg_prob * 100, 2)}%</span>",
+        "Fair Odds": decimal_to_american(fair),
+        "Edge %": f"<span style='color:{color_edge}'>{edge}%</span>",
+        "Kelly Stake": f"${kelly}",
+        "Message": msg
+    })
 
     st.subheader("📈 Comparison Table")
     df = pd.DataFrame(results)
     st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-    # ---------- Editable Bet Log ----------
-    if "bet_log" not in st.session_state:
-        st.session_state.bet_log = []
-
-    with st.form("log_form"):
-        st.subheader("📝 Log This Bet")
-        log_this = st.checkbox("Add to Bet Log")
-        result_status = st.selectbox("Result (if known)", ["Pending", "Win", "Loss"])
-        submitted = st.form_submit_button("Submit Bet")
-
-        if submitted and log_this:
-            st.session_state.bet_log.append({
-                "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "Side": side_choice,
-                "Your Odds": your_odds_input,
-                "Edge (EM) %": calc_edge(remove_margin_equal(sharp_a, sharp_b)[0 if side_choice == "Side A" else 1], your_prob),
-                "Stake (EM)": f"${kelly_stake(bankroll, your_odds, remove_margin_equal(sharp_a, sharp_b)[0 if side_choice == "Side A" else 1], kelly_fraction)}",
-                "Result": result_status
-            })
-
-    # ---------- Display and Edit Bet Log ----------
-    st.subheader("📋 Bet Log")
-    log_df = pd.DataFrame(st.session_state.bet_log)
-
-    if not log_df.empty:
-        for i in range(len(log_df)):
-            cols = st.columns([1.5, 1, 1, 1, 1, 1])
-            cols[0].write(log_df.iloc[i]["Date"])
-            cols[1].write(log_df.iloc[i]["Side"])
-            cols[2].write(log_df.iloc[i]["Your Odds"])
-            cols[3].write(log_df.iloc[i]["Edge (EM) %"])
-            cols[4].write(log_df.iloc[i]["Stake (EM)"])
-            result = cols[5].selectbox("Result", ["Pending", "Win", "Loss"], key=f"result_{i}", index=["Pending", "Win", "Loss"].index(log_df.iloc[i]["Result"]))
-            st.session_state.bet_log[i]["Result"] = result
-            st.markdown("---")
-
-        delete_index = st.number_input("Enter row # to delete (0-based index)", min_value=0, max_value=len(log_df)-1, step=1)
-        if st.button("Delete Entry"):
-            st.session_state.bet_log.pop(delete_index)
-            st.success("Entry deleted. Reload the page to update.")
-    else:
-        st.info("No bets logged yet.")
+    # ---------- Export to CSV ----------
+    if st.download_button("📥 Export Bet Log to CSV", data=df.to_csv(index=False), file_name="bet_analysis.csv", mime="text/csv"):
+        st.success("CSV downloaded!")
