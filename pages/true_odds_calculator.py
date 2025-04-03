@@ -1,10 +1,43 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import math
 
 # ---------- Helper Functions ----------
+def american_to_decimal(odds):
+    if odds > 0:
+        return round((odds / 100) + 1, 4)
+    else:
+        return round((100 / abs(odds)) + 1, 4)
+
 def implied_prob(decimal_odds):
     return 1 / decimal_odds
+
+def remove_margin_equal(odds_a, odds_b):
+    imp_a, imp_b = implied_prob(odds_a), implied_prob(odds_b)
+    total = imp_a + imp_b
+    return imp_a / total, imp_b / total
+
+def remove_margin_log(odds_a, odds_b):
+    log_a, log_b = math.log(odds_a), math.log(odds_b)
+    total_log = log_a + log_b
+    return log_b / total_log, log_a / total_log
+
+def remove_margin_mpto(odds_a, odds_b):
+    imp_a, imp_b = implied_prob(odds_a), implied_prob(odds_b)
+    total = imp_a + imp_b
+    weight_a = odds_a / (odds_a + odds_b)
+    weight_b = 1 - weight_a
+    margin = total - 1
+    return (imp_a - margin * weight_a), (imp_b - margin * weight_b)
+
+def remove_margin_shin(odds_a, odds_b):
+    imp_a, imp_b = implied_prob(odds_a), implied_prob(odds_b)
+    z = imp_a + imp_b
+    k = 2 - z
+    true_prob_a = (imp_a - ((imp_a ** 2) - ((k - 1) * imp_a)) ** 0.5) / (1 - k)
+    true_prob_b = 1 - true_prob_a
+    return true_prob_a, true_prob_b
 
 def fair_odds(prob):
     return round(1 / prob, 2)
@@ -21,54 +54,75 @@ def kelly_stake(bankroll, odds, win_prob, fraction):
     return round(bankroll * kelly_fraction * fraction, 2)
 
 # ---------- Streamlit UI ----------
-st.title("📊 True Odds + Value Calculator")
+st.title("📊 True Odds + Value Calculator (All Methods)")
 
 st.write("""
-Compare odds from a sharp book (like Pinnacle) with the odds you can bet on (FanDuel, DraftKings, etc.)
-to determine if a bet has positive expected value (+EV), suggested unit size, and track your edges.
+Input odds for both sides of the sharp market, plus your odds. We'll calculate the true probability,
+fair odds, edge %, and suggested Kelly stake across 4 methods: Equal Margin, LOG, MPTO, and Shin.
 """)
 
-sharp_odds = st.number_input("Sharp Book Odds (e.g. Pinnacle)", min_value=1.01, value=1.91, step=0.01)
-your_odds = st.number_input("Your Book Odds (e.g. FanDuel, DraftKings)", min_value=1.01, value=2.10, step=0.01)
-bankroll = st.number_input("Current Bankroll", min_value=1.0, value=1000.0, step=10.0)
+# Input Section
+col1, col2 = st.columns(2)
+with col1:
+    sharp_odds_a_input = st.number_input("Sharp Book Odds - Side A (American)", value=-104)
+with col2:
+    sharp_odds_b_input = st.number_input("Sharp Book Odds - Side B (American)", value=-110)
+
+side_choice = st.radio("Which side are you betting on?", ["Side A", "Side B"])
+your_odds_input = st.number_input("Your Odds (American)", value=125)
+bankroll = st.number_input("Bankroll", min_value=1.0, value=1000.0, step=10.0)
 kelly_fraction = st.slider("Fraction of Kelly to Use", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
 
-# ---------- Edge Calculation ----------
-if st.button("Calculate"):
-    sharp_prob = implied_prob(sharp_odds)
-    your_prob = implied_prob(your_odds)
-    edge = calc_edge(sharp_prob, your_prob)
-    fair_line = fair_odds(sharp_prob)
-    kelly_bet = kelly_stake(bankroll, your_odds, sharp_prob, kelly_fraction)
+# Convert to decimal
+sharp_a = american_to_decimal(sharp_odds_a_input)
+sharp_b = american_to_decimal(sharp_odds_b_input)
+your_odds = american_to_decimal(your_odds_input)
+your_prob = implied_prob(your_odds)
 
-    st.subheader("📈 Results")
-    st.write(f"**True Implied Probability (Sharp Book)**: {round(sharp_prob * 100, 2)}%")
-    st.write(f"**Your Implied Probability**: {round(your_prob * 100, 2)}%")
-    st.write(f"**Fair Odds**: {fair_line}")
-    st.write(f"**Edge (Value)**: {edge}%")
-    st.write(f"**Recommended Bet (Kelly)**: ${kelly_bet}")
+# Apply all methods
+results = []
+methods = {
+    "Equal Margin": remove_margin_equal,
+    "LOG Method": remove_margin_log,
+    "MPTO Method": remove_margin_mpto,
+    "Shin Method": remove_margin_shin
+}
 
-    if edge > 0:
-        st.success("✅ This is a +EV (positive expected value) bet!")
-    else:
-        st.error("❌ This is a -EV bet. Not worth it based on sharp probability.")
-
-    # ---------- Save Edge to Session ----------
-    if "edge_history" not in st.session_state:
-        st.session_state.edge_history = []
-    st.session_state.edge_history.append({
-        "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "Sharp Odds": sharp_odds,
-        "Your Odds": your_odds,
+for method_name, method_func in methods.items():
+    prob_a, prob_b = method_func(sharp_a, sharp_b)
+    true_prob = prob_a if side_choice == "Side A" else prob_b
+    fair = fair_odds(true_prob)
+    edge = calc_edge(true_prob, your_prob)
+    kelly = kelly_stake(bankroll, your_odds, true_prob, kelly_fraction)
+    results.append({
+        "Method": method_name,
+        "True Prob": round(true_prob * 100, 2),
+        "Fair Odds": fair,
         "Edge %": edge,
-        "Suggested Bet": kelly_bet
+        "Kelly Stake": f"${kelly}"
     })
 
-# ---------- Graph of Edges ----------
-if "edge_history" in st.session_state and len(st.session_state.edge_history) > 0:
-    df = pd.DataFrame(st.session_state.edge_history)
-    st.subheader("📊 Edge History")
-    st.line_chart(df.set_index("Date")["Edge %"])
+# Display table
+st.subheader("📈 Comparison Table")
+df = pd.DataFrame(results)
+st.dataframe(df, use_container_width=True)
 
-    st.subheader("📋 Bet Log")
-    st.dataframe(df[::-1], use_container_width=True)
+# Save to session log
+if "edge_history" not in st.session_state:
+    st.session_state.edge_history = []
+st.session_state.edge_history.append({
+    "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+    "Side": side_choice,
+    "Your Odds": your_odds_input,
+    "Edge (EM)": df.iloc[0]["Edge %"],
+    "Stake (EM)": df.iloc[0]["Kelly Stake"]
+})
+
+# History and Chart
+hist_df = pd.DataFrame(st.session_state.edge_history)
+
+st.subheader("📊 Edge Over Time (EM Only)")
+st.line_chart(hist_df.set_index("Date")["Edge (EM)"])
+
+st.subheader("📋 Bet Log")
+st.dataframe(hist_df[::-1], use_container_width=True)
