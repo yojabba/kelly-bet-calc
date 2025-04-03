@@ -23,22 +23,6 @@ def remove_margin_log(odds_a, odds_b):
     total_log = log_a + log_b
     return log_b / total_log, log_a / total_log
 
-def remove_margin_mpto(odds_a, odds_b):
-    imp_a, imp_b = implied_prob(odds_a), implied_prob(odds_b)
-    total = imp_a + imp_b
-    weight_a = odds_a / (odds_a + odds_b)
-    weight_b = 1 - weight_a
-    margin = total - 1
-    return (imp_a - margin * weight_a), (imp_b - margin * weight_b)
-
-def remove_margin_shin(odds_a, odds_b):
-    imp_a, imp_b = implied_prob(odds_a), implied_prob(odds_b)
-    z = imp_a + imp_b
-    k = 2 - z
-    true_prob_a = (imp_a - ((imp_a ** 2) - ((k - 1) * imp_a)) ** 0.5) / (1 - k)
-    true_prob_b = 1 - true_prob_a
-    return true_prob_a, true_prob_b
-
 def fair_odds(prob):
     return round(1 / prob, 2)
 
@@ -54,11 +38,11 @@ def kelly_stake(bankroll, odds, win_prob, fraction):
     return round(bankroll * kelly_fraction * fraction, 2)
 
 # ---------- Streamlit UI ----------
-st.title("📊 True Odds + Value Calculator (All Methods)")
+st.title("📊 True Odds + Value Calculator (EM & LOG)")
 
 st.write("""
 Input odds for both sides of the sharp market, plus your odds. We'll calculate the true probability,
-fair odds, edge %, and suggested Kelly stake across 4 methods: Equal Margin, LOG, MPTO, and Shin.
+fair odds, edge %, and suggested Kelly stake using Equal Margin and LOG methods.
 """)
 
 # Input Section
@@ -73,56 +57,81 @@ your_odds_input = st.number_input("Your Odds (American)", value=125)
 bankroll = st.number_input("Bankroll", min_value=1.0, value=1000.0, step=10.0)
 kelly_fraction = st.slider("Fraction of Kelly to Use", min_value=0.1, max_value=1.0, value=0.5, step=0.1)
 
-# Convert to decimal
-sharp_a = american_to_decimal(sharp_odds_a_input)
-sharp_b = american_to_decimal(sharp_odds_b_input)
-your_odds = american_to_decimal(your_odds_input)
-your_prob = implied_prob(your_odds)
+calculate = st.button("Calculate")
 
-# Apply all methods
-results = []
-methods = {
-    "Equal Margin": remove_margin_equal,
-    "LOG Method": remove_margin_log,
-    "MPTO Method": remove_margin_mpto,
-    "Shin Method": remove_margin_shin
-}
+if calculate:
+    sharp_a = american_to_decimal(sharp_odds_a_input)
+    sharp_b = american_to_decimal(sharp_odds_b_input)
+    your_odds = american_to_decimal(your_odds_input)
+    your_prob = implied_prob(your_odds)
 
-for method_name, method_func in methods.items():
-    prob_a, prob_b = method_func(sharp_a, sharp_b)
-    true_prob = prob_a if side_choice == "Side A" else prob_b
-    fair = fair_odds(true_prob)
-    edge = calc_edge(true_prob, your_prob)
-    kelly = kelly_stake(bankroll, your_odds, true_prob, kelly_fraction)
-    results.append({
-        "Method": method_name,
-        "True Prob": round(true_prob * 100, 2),
-        "Fair Odds": fair,
-        "Edge %": edge,
-        "Kelly Stake": f"${kelly}"
-    })
+    results = []
+    methods = {
+        "Equal Margin": remove_margin_equal,
+        "LOG Method": remove_margin_log
+    }
 
-# Display table
-st.subheader("📈 Comparison Table")
-df = pd.DataFrame(results)
-st.dataframe(df, use_container_width=True)
+    for method_name, method_func in methods.items():
+        prob_a, prob_b = method_func(sharp_a, sharp_b)
+        true_prob = prob_a if side_choice == "Side A" else prob_b
+        fair = fair_odds(true_prob)
+        edge = calc_edge(true_prob, your_prob)
+        kelly = kelly_stake(bankroll, your_odds, true_prob, kelly_fraction)
 
-# Save to session log
-if "edge_history" not in st.session_state:
-    st.session_state.edge_history = []
-st.session_state.edge_history.append({
-    "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-    "Side": side_choice,
-    "Your Odds": your_odds_input,
-    "Edge (EM)": df.iloc[0]["Edge %"],
-    "Stake (EM)": df.iloc[0]["Kelly Stake"]
-})
+        color = "green" if edge > 0 else "red"
+        edge_display = f"<span style='color:{color}'>{edge}%</span>"
 
-# History and Chart
-hist_df = pd.DataFrame(st.session_state.edge_history)
+        results.append({
+            "Method": method_name,
+            "True Prob": round(true_prob * 100, 2),
+            "Fair Odds": fair,
+            "Edge %": edge_display,
+            "Kelly Stake": f"${kelly}"
+        })
 
-st.subheader("📊 Edge Over Time (EM Only)")
-st.line_chart(hist_df.set_index("Date")["Edge (EM)"])
+    st.subheader("📈 Comparison Table")
+    df = pd.DataFrame(results)
+    st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-st.subheader("📋 Bet Log")
-st.dataframe(hist_df[::-1], use_container_width=True)
+    # ---------- Editable Bet Log ----------
+    if "bet_log" not in st.session_state:
+        st.session_state.bet_log = []
+
+    with st.form("log_form"):
+        st.subheader("📝 Log This Bet")
+        log_this = st.checkbox("Add to Bet Log")
+        result_status = st.selectbox("Result (if known)", ["Pending", "Win", "Loss"])
+        submitted = st.form_submit_button("Submit Bet")
+
+        if submitted and log_this:
+            st.session_state.bet_log.append({
+                "Date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Side": side_choice,
+                "Your Odds": your_odds_input,
+                "Edge (EM) %": calc_edge(remove_margin_equal(sharp_a, sharp_b)[0 if side_choice == "Side A" else 1], your_prob),
+                "Stake (EM)": f"${kelly_stake(bankroll, your_odds, remove_margin_equal(sharp_a, sharp_b)[0 if side_choice == "Side A" else 1], kelly_fraction)}",
+                "Result": result_status
+            })
+
+    # ---------- Display and Edit Bet Log ----------
+    st.subheader("📋 Bet Log")
+    log_df = pd.DataFrame(st.session_state.bet_log)
+
+    if not log_df.empty:
+        for i in range(len(log_df)):
+            cols = st.columns([1.5, 1, 1, 1, 1, 1])
+            cols[0].write(log_df.iloc[i]["Date"])
+            cols[1].write(log_df.iloc[i]["Side"])
+            cols[2].write(log_df.iloc[i]["Your Odds"])
+            cols[3].write(log_df.iloc[i]["Edge (EM) %"])
+            cols[4].write(log_df.iloc[i]["Stake (EM)"])
+            result = cols[5].selectbox("Result", ["Pending", "Win", "Loss"], key=f"result_{i}", index=["Pending", "Win", "Loss"].index(log_df.iloc[i]["Result"]))
+            st.session_state.bet_log[i]["Result"] = result
+            st.markdown("---")
+
+        delete_index = st.number_input("Enter row # to delete (0-based index)", min_value=0, max_value=len(log_df)-1, step=1)
+        if st.button("Delete Entry"):
+            st.session_state.bet_log.pop(delete_index)
+            st.success("Entry deleted. Reload the page to update.")
+    else:
+        st.info("No bets logged yet.")
